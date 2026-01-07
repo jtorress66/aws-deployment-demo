@@ -9,7 +9,10 @@ on:
   workflow_dispatch:
 
 env:
+  # Prefer defining AWS_REGION as a GitHub secret (Settings -> Secrets and variables -> Actions)
+  # but keep a safe default.
   AWS_REGION: us-east-1
+  # Consider moving this to a secret as well if you want to avoid hard-coding.
   AMPLIFY_APP_ID: d1q5wqgtrh9c0k
 
 jobs:
@@ -17,38 +20,60 @@ jobs:
     name: Deploy to Amplify
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: read
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      # Fail fast with a clear error if secrets were not added (or were added under different names).
+      - name: Verify AWS secrets are present
+        shell: bash
+        run: |
+          if [ -z "${{ secrets.AWS_ACCESS_KEY_ID }}" ] || [ -z "${{ secrets.AWS_SECRET_ACCESS_KEY }}" ]; then
+            echo "Missing required GitHub Secrets. Add these in: Repo -> Settings -> Secrets and variables -> Actions"
+            echo "- AWS_ACCESS_KEY_ID"
+            echo "- AWS_SECRET_ACCESS_KEY"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq zip
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: ${{ secrets.AWS_REGION || env.AWS_REGION }}
 
       - name: Create deployment package
+        shell: bash
         run: |
           cd amplify/src
           zip -r ../../amplify-source.zip .
 
       - name: Deploy to Amplify
+        shell: bash
         run: |
           DEPLOYMENT_INFO=$(aws amplify create-deployment \
-            --app-id ${{ env.AMPLIFY_APP_ID }} \
+            --app-id "${{ env.AMPLIFY_APP_ID }}" \
             --branch-name main)
 
-          JOB_ID=$(echo $DEPLOYMENT_INFO | jq -r '.jobId')
-          UPLOAD_URL=$(echo $DEPLOYMENT_INFO | jq -r '.zipUploadUrl')
+          JOB_ID=$(echo "$DEPLOYMENT_INFO" | jq -r '.jobId')
+          UPLOAD_URL=$(echo "$DEPLOYMENT_INFO" | jq -r '.zipUploadUrl')
 
           echo "Job ID: $JOB_ID"
 
           curl --request PUT --upload-file amplify-source.zip "$UPLOAD_URL"
 
           aws amplify start-deployment \
-            --app-id ${{ env.AMPLIFY_APP_ID }} \
+            --app-id "${{ env.AMPLIFY_APP_ID }}" \
             --branch-name main \
-            --job-id $JOB_ID
+            --job-id "$JOB_ID"
 
           echo "Deployment started!"
